@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body style="margin: 0; background-color: #000022;">
+    <canvas style="border:1px solid black; position:absolute; left: 50%; transform: translateX(-50%); top: 20%;" id="canvas" width="512px" height="512px">
+ 
+    </canvas>
+    <h2 hidden id="score_tracker" style="color: white;">Score: 0</h2>
+    <div hidden id="my_console" style="white-space: pre; background-color:#000022; color: white; overflow-y: scroll; height: 80%; width: 500px; position:absolute; top: 10%;"></div>
+    <button hidden onclick="stop_execution()">Stop game</button>
+</body>
+</html>
+<script>
+    { // main
+        function init() {
+            error_init();
+            canvas_init();
+            frame_clock_init();
+            sprites_init();
+            colors_init();
+            stars_init();
+            ship_init();
+            bullets_init();
+            enemies_init();
+            waves_init();
+            controls_init();
+            particles_init();
+            start();
+ 
+            create_enemy(SIZE*0.125+Math.random()*(SIZE-SIZE*0.25), -16);
+        }
+ 
+        function step() {
+            frame_clock();
+            star_step();
+            enemy_step();
+            bullets_step();
+            ship_controls();
+            waves_timer();
+            particles_step();
+ 
+            collision_checks();
+        }
+ 
+        function draw() {
+            clr();
+            draw_stars();
+            draw_bullets();
+            draw_enemy();
+            draw_ship();
+            draw_particles();
+            draw_healthbar();
+            if (game_over) {
+                draw_gameover();
+            }
+        }
+    }
+ 
+    { // engine setup
+        function frame_clock_init() {
+            frame_counter = 0;
+        }
+ 
+        function frame_clock() {
+            frame_counter++;
+        }
+ 
+        function stop_execution() {
+            clearInterval(LOOP);
+        }
+ 
+        function error_init() {
+            console_current_line = 0;
+            window.onerror = function(message, source, lineno, colno, error) {
+                consoleLog(message + "in line" + lineno + ", column " + colno);
+            }
+        }
+ 
+        function consoleLog(message) {
+            document.getElementById("my_console").textContent = console_current_line + " - " + message+"\n"+document.getElementById("my_console").textContent;
+            console_current_line++;
+        }
+ 
+        function canvas_init() {
+            C = document.getElementById("canvas");
+            CTX = C.getContext("2d");
+            BASE_SIZE = 512;
+            SCALE = 2;
+            SIZE = BASE_SIZE/SCALE;
+ 
+            CTX.scale(SCALE,SCALE);
+        }
+ 
+        function start() {
+            generate_stars();
+ 
+            game_over = false
+            score = 0;
+            FPS = 45;
+            LOOP = window.setInterval(()=>{
+                step();
+                draw();
+            }, (1/FPS)*1000);
+        }
+    }
+ 
+    { // helper
+        function objectSprCenter(my_object) {
+            return my_object.sprite[0].length/2
+        }
+ 
+        function draw_gameover() {
+            CTX.font = "bold italic 30px Arial";
+            CTX.fillStyle = COL[4];
+            CTX.fillText("GAME OVER", SIZE*0.1, SIZE*0.4)
+ 
+            CTX.font = "bold italic 12px Arial";
+            CTX.fillStyle = COL[1];
+            CTX.fillText(`Score: ${score}`, SIZE*0.4, SIZE*0.8)
+        }
+    }
+ 
+    { // fundamental draw logic
+        function px(x,y,col) {
+            CTX.fillStyle = col;
+            CTX.fillRect(Math.round(x), Math.round(y), 1, 1);
+        }
+ 
+        function circle(x, y, r, col, fill = false) {
+            for (let i = x-r; i <= x+r; i++) {
+                for (let j = y-r; j <= y+r; j++) {
+                    let distance = (i - x)*(i - x) + (j - y)*(j - y);
+                    if (fill) {
+                        if (distance <= (r+0.5) * (r+0.5)) {
+                            px(i,j,COL[col]);
+                        }
+                    } else {
+                        if (distance >= (r-0.5) * (r-0.5) && distance <= (r+0.5) * (r+0.5)) {
+                            px(i,j,COL[col]);
+                        }
+                    }
+                }
+            }
+        }
+ 
+        function clr() {
+            CTX.fillStyle = COLORS["black"];
+            CTX.fillRect(0,0,C.width,C.height);
+        }
+ 
+        function draw_sprite(sprite, x, y, {spr_index = 0, overridecolor = -1} = {}) {
+            if (spr_index > sprite.length) {
+                spr_index = spr_index % sprite.length;
+            }
+            spr = sprite[spr_index];
+            for (let i = 0; i < spr.length; i++) {
+                for (let j = 0; j < spr.length; j++) {
+                    if (spr[i][j]!=-1) {
+                        if (overridecolor == -1) {
+                            px(x+j,y+i,COL[spr[i][j]]);
+                        } else {
+                            px(x+j,y+i,COL[overridecolor]);
+                        }
+                    }
+                }
+            }
+        }
+ 
+        function lerp(point_a, point_b, pct) {
+            return point_a + pct*(point_b-point_a);
+        }
+    }
+ 
+    { // collision
+        function collision_checks() {
+            enemyorplayer_to_bullet_collision();
+        }
+ 
+        function enemyorplayer_to_bullet_collision() {
+            for (let i = enemies.length-1; i >= 0; i--) {
+                let my_enemy = enemies[i];
+                for (let j = bullets.length-1; j >= 0; j--) {
+                    let my_bullet = bullets[j];
+                    if (my_bullet.team == 1) {
+                        let dx = my_bullet.x - my_enemy.x;
+                        let dy = my_bullet.y - my_enemy.y;
+                        let summed_radius = my_bullet.collision_radius + my_enemy.collision_radius;
+ 
+                        if (Math.floor(dx*dx + dy*dy) < summed_radius*summed_radius) {
+                            my_enemy.hp -= SHIP.damage;
+                            my_enemy.flash_timer = my_enemy.max_flash_timer
+                            if (my_enemy.hp <= 0) {
+                                fire_explosion(my_enemy.x, my_enemy.y);
+                                enemies.splice(i, 1);
+                                score+=10;
+                                document.getElementById("score_tracker").textContent = "Score: "+score;
+                            }
+                            bullets.splice(j, 1);
+                        }
+                    } else {
+                        let dx = my_bullet.x - SHIP.x;
+                        let dy = my_bullet.y - SHIP.y;
+                        let summed_radius = my_bullet.collision_radius + SHIP.collision_radius;
+ 
+                        if (Math.floor(dx*dx + dy*dy) < summed_radius*summed_radius) {
+                            SHIP.hp -= my_enemy.damage;
+                            SHIP.flash_timer = SHIP.max_flash_timer;
+                            if (SHIP.hp <= 0) {
+                                game_over = true;
+                                stop_execution();
+                            }
+                            bullets.splice(j, 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+ 
+    { // bullets
+        function create_bullet(my_x, my_y, my_speed = 6, ally = true) {
+            let my_bullet = new Object;
+ 
+            if (ally == true) {
+                my_bullet.sprite = SPR_PLAYERBULLET;
+                my_bullet.team = 1;
+            } else {
+                my_bullet.sprite = SPR_ENEMYBULLET;
+                my_bullet.team = 2;
+            }
+ 
+            let half_sprite_size = my_bullet.sprite[0].length/2
+ 
+            my_bullet.x = my_x - half_sprite_size;
+            my_bullet.y = my_y - half_sprite_size;
+            my_bullet.speed = my_speed;
+ 
+            my_bullet.collision_radius = 8;
+            my_bullet.id = bullets.length;
+            bullets.push(my_bullet);
+        }
+ 
+        function bullets_init() {
+            bullets = [];
+        }
+ 
+        function bullets_step() {
+            for (let i = bullets.length-1; i >= 0; i--) {
+                if (bullets[i].team == 1) {
+                    bullets[i].y-=bullets[i].speed;
+                } else {
+                    bullets[i].y+=bullets[i].speed;
+                }
+                if (bullets[i].y+SPR_PLAYERBULLET[0].length < 0 || bullets[i].y > SIZE) {
+                    bullets.splice(i, 1);
+                }
+            }
+        }
+ 
+        function draw_bullets() {
+            for (let i = 0; i < bullets.length; i++) {
+                draw_sprite(bullets[i].sprite, bullets[i].x, bullets[i].y);
+            }
+        }
+    }
+ 
+    { // stars
+        function stars_init() {
+            STAR_COLORS = [COL[1],COL[2],COL[3]];
+           
+            STARMAXQT = 500;
+            STAR_MAX_SPD = 4;
+            STARQT = 150;
+        }
+ 
+        function generate_stars() {
+            stars = [];
+            for (let i = 0; i < STARQT; i++) {
+                new_star();
+            }
+        }
+ 
+        function new_star() {
+            let my_star = new Object;
+            my_star.x = Math.round(Math.random()*SIZE*10)/10;
+            my_star.y = Math.round(Math.random()*SIZE*10)/10;
+            my_star.col = Math.round(Math.random()*2);
+            my_star.spd = 1+Math.random()*STAR_MAX_SPD;
+ 
+            stars.push(my_star);
+        }
+ 
+        function draw_stars() {
+            for (let i = 0; i < stars.length; i++) {
+                px(stars[i].x, stars[i].y, STAR_COLORS[stars[i].col]);
+            }
+        }
+ 
+        function star_step() {
+            for (let i = 0; i < stars.length; i++) {
+                stars[i].y+=stars[i].spd;
+                if (stars[i].y > SIZE) {
+                    stars[i].y = 0;
+                }
+ 
+                if (Math.random() > 0.9) {
+                    stars[i].col = (stars[i].col+1) % STAR_COLORS.length;
+                }
+            }
+        }
+    }
+ 
+    { // enemies
+        function enemies_init() {
+            enemies = [];
+        }
+ 
+        function create_enemy(x, y) {
+            let my_enemy = new Object;
+            my_enemy.sprite = SPR_ENEMY;
+            my_enemy.hp = 15;
+            my_enemy.damage = 1;
+            my_enemy.state = 1 // 0 = deciding, 1 = moving, 2 = shooting, 3 = escaping
+ 
+            my_enemy.x = x;
+            my_enemy.y = y;
+            my_enemy.dest_x = x;
+            my_enemy.dest_y = y;
+ 
+            my_enemy.collision_radius = 8.5;
+ 
+            my_enemy.maxdecidingtimer = 32
+            my_enemy.maxmovingtimer = 18
+            my_enemy.maxshootingtimer = 24
+ 
+            my_enemy.timer = 0;
+            my_enemy.moveradius = 50;
+ 
+            my_enemy.flash_timer = 0;
+            my_enemy.max_flash_timer = 5;
+ 
+            my_enemy.shoot_timer = 0;
+ 
+            enemy_new_destination(my_enemy);
+ 
+            enemies.push(my_enemy);
+        }
+ 
+        function enemy_new_destination(my_enemy) {
+            let angle = Math.random();
+            my_enemy.previousdest_x = my_enemy.dest_x;
+            my_enemy.previousdest_y = my_enemy.dest_y;
+           
+            let radians = 0;
+            if (my_enemy.x < my_enemy.moveradius || my_enemy.x > SIZE - my_enemy.moveradius - my_enemy.sprite[0].length) {
+                if (my_enemy.x < my_enemy.moveradius) {
+                    radians = (Math.PI/4)*angle;
+                    radians = (Math.PI/4)*angle;
+                } else {
+                    radians = Math.PI/2+(Math.PI/4*angle);
+                    radians = Math.PI/2+(Math.PI/4*angle);
+                }
+            } else {
+                radians = Math.PI/4+(Math.PI/2*angle);
+                radians = Math.PI/4+(Math.PI/2*angle);
+            }
+            my_enemy.dest_x = my_enemy.x+my_enemy.moveradius*Math.cos(radians);
+            my_enemy.dest_y = my_enemy.y+my_enemy.moveradius*Math.sin(radians);
+        }
+ 
+        function enemy_step() {
+            const escape_point = 0.5;
+            for (let i = enemies.length-1; i >= 0; i--) {
+                let my_enemy = enemies[i];
+                if (my_enemy.state == 0) { // deciding
+                    my_enemy.timer++;
+                    if (my_enemy.timer > my_enemy.maxdecidingtimer) {
+                        my_enemy.timer = 0;
+                        my_enemy.state = 1;
+                        enemy_new_destination(my_enemy);
+                    }
+ 
+                } else if (my_enemy.state == 1) { // moving
+                    my_enemy.x = Math.floor(lerp(my_enemy.previousdest_x, my_enemy.dest_x, my_enemy.timer/my_enemy.maxmovingtimer));
+                    my_enemy.y = Math.floor(lerp(my_enemy.previousdest_y, my_enemy.dest_y, my_enemy.timer/my_enemy.maxmovingtimer));
+                    my_enemy.timer++;
+                    if (my_enemy.y > SIZE*escape_point) {
+                            my_enemy.state = 3;
+                    } else if (my_enemy.timer > my_enemy.maxmovingtimer) {
+                        my_enemy.timer = 0;
+                        my_enemy.state = 2;
+                    }
+ 
+                } else if (my_enemy.state == 2) { // shooting
+                    my_enemy.shoot_timer++;
+                    if (my_enemy.shoot_timer % 8 == 0) {
+                        create_bullet(my_enemy.x+8, my_enemy.y+12, 4, false);
+                        my_enemy.shoot_timer = 0;
+                    }
+                    my_enemy.timer++;
+                    if (my_enemy.timer > my_enemy.maxshootingtimer) {
+                        my_enemy.timer = 0;
+                        my_enemy.state = 0;
+                    }
+                }else if (my_enemy.state == 3) { // escaping
+                    let remaining_size = SIZE*(1-escape_point)
+                    let progress = (my_enemy.y-remaining_size)/remaining_size;
+                    let calc = 2;
+                    let calc2 = 2+progress*progress*progress*progress;
+                    if (my_enemy.x < SIZE/2) {
+                        my_enemy.x -= calc2;
+                    } else {
+                        my_enemy.x += calc2;
+                    }
+                    my_enemy.y += calc;
+                    if (my_enemy.y > SIZE) {
+                        enemies.splice(i, 1);
+                    }
+                }
+                if (my_enemy.flash_timer > 0) {
+                    my_enemy.flash_timer--;
+                }
+            }
+        }
+ 
+        function draw_enemy() {
+            for (let i = 0; i < enemies.length; i++) {
+                if (enemies[i].flash_timer > 0) {
+                    draw_sprite(enemies[i].sprite, enemies[i].x, enemies[i].y, {overridecolor: 1});
+                } else {
+                    draw_sprite(enemies[i].sprite, enemies[i].x, enemies[i].y);
+                }
+            }
+        }
+    }
+ 
+    { // spaceship
+        { // controls
+            function check_touching_borders() {
+                touching_left = SHIP.x <= 0;
+                touching_right = SHIP.x+SPR_SPACESHIP[0].length >= SIZE;
+                touching_top = SHIP.y <= 0;
+                touching_bottom = SHIP.y+SPR_SPACESHIP[0].length >= SIZE;
+            }
+ 
+            function controls_init() {
+                key_up = false;
+                key_left = false;
+                key_down = false;
+                key_right = false;
+ 
+                key_x = false;
+                key_z = false;
+ 
+                window.addEventListener('keydown', (e)=>{
+                    if (e.key == "ArrowUp") {
+                        key_up = true;
+                    }
+                    if (e.key == "ArrowLeft") {
+                        key_left = true;
+                    }
+                    if (e.key == "ArrowDown") {
+                        key_down = true;
+                    }
+                    if (e.key == "ArrowRight") {
+                        key_right = true;
+                    }
+                    if (e.key == "x") {
+                        key_x = true;
+                    }
+                    if (e.key == "z") {
+                        key_z = true;
+                    }
+                });
+ 
+                window.addEventListener('keyup', (e)=>{
+                    if (e.key == "ArrowUp") {
+                        key_up = false;
+                    }
+                    if (e.key == "ArrowLeft") {
+                        key_left = false;
+                    }
+                    if (e.key == "ArrowDown") {
+                        key_down = false;
+                    }
+                    if (e.key == "ArrowRight") {
+                        key_right = false;
+                    }
+                    if (e.key == "x") {
+                        key_x = false;
+                    }
+                    if (e.key == "z") {
+                        key_z = false;
+                    }
+                });
+            }
+ 
+            function ship_controls() {
+                SHIP.sx = 0;
+                SHIP.sy = 0;
+                check_touching_borders();
+ 
+                if (key_up && !touching_top) {
+                    SHIP.sy -= 1;
+                }
+                if (key_left && !touching_left) {
+                    SHIP.sx -= 1;
+                }
+                if (key_down && !touching_bottom) {
+                    SHIP.sy += 1;
+                }
+                if (key_right && !touching_right) {
+                    SHIP.sx += 1;
+                }
+ 
+                if (key_x) {
+                    ship_shoot();
+                } else {
+                    SHIP.shoot_timer = 0;
+                }
+ 
+                let normal_modifier = 1
+ 
+                if (SHIP.sx != 0 && SHIP.sy != 0) {
+                    normal_modifier = 0.7071;
+                }
+                SHIP.x+=(SHIP.sx*normal_modifier)*SHIP.speed;
+                SHIP.y+=(SHIP.sy*normal_modifier)*SHIP.speed;
+ 
+                check_touching_borders();
+ 
+                if (touching_top) {
+                    SHIP.y = 0;
+                }
+                if (touching_left) {
+                    SHIP.x = 0;
+                }
+                if (touching_right) {
+                    SHIP.x = SIZE-SPR_SPACESHIP[0].length;
+                }
+                if (touching_bottom) {
+                    SHIP.y = SIZE-SPR_SPACESHIP[0].length;
+                }
+            }
+        }
+ 
+        function ship_init() {
+            SHIP = new Object;
+ 
+            SHIP.x = SIZE/2-SPR_SPACESHIP.length/2;
+            SHIP.y = SIZE - 64;
+ 
+            SHIP.maxhp = 5;
+            SHIP.hp = SHIP.maxhp;
+ 
+            SHIP.sprite = SPR_SPACESHIP;
+            SHIP.spr_index = 0;
+           
+            SHIP.sx = 0;
+            SHIP.sy = 0;
+            SHIP.speed = 4;
+           
+            SHIP.shoot_timer = 0;
+            SHIP.damage = 4;
+ 
+            SHIP.collision_radius = 7;
+            SHIP.max_flash_timer = 5;
+            SHIP.flash_timer = 0;
+        }
+ 
+        function draw_ship() {
+            SHIP.spr_index = 0;
+            if (SHIP.sx < 0) {
+                SHIP.spr_index = 1;
+            } else if (SHIP.sx > 0) {
+                SHIP.spr_index = 2;
+            }
+            if (SHIP.flash_timer > 0) {
+                draw_sprite(SPR_SPACESHIP, SHIP.x, SHIP.y, {spr_index: SHIP.spr_index, coloroverride: 1});    
+            } else {
+                draw_sprite(SPR_SPACESHIP, SHIP.x, SHIP.y, {spr_index: SHIP.spr_index});
+            }
+            if (Math.floor(frame_counter/2) % 2 == 0) {
+                draw_sprite(SPR_PROPULSIONFIRE, SHIP.x, SHIP.y+SPR_SPACESHIP[0].length, {spr_index: Math.floor(frame_counter)});
+            }
+        }
+
+        function draw_healthbar() {
+            let gap = 13;
+            for (i = 0; i < SHIP.maxhp; i++) {
+                draw_sprite(SPR_HEALTH, 8+(gap*i), 8, {spr_index: 1});
+            }
+            for (i = 0; i < SHIP.hp; i++) {
+                draw_sprite(SPR_HEALTH, 8+(gap*i), 8, {spr_index: 0});
+            }
+        }
+ 
+        function ship_step() {
+            if (SHIP.flash_timer > 0) {
+                SHIP.flash_timer--;
+            }
+        }
+ 
+        function ship_shoot() {
+            if (SHIP.shoot_timer % 8 == 0) {
+                create_bullet(SHIP.x+8, SHIP.y);
+            }
+            SHIP.shoot_timer++;
+        }
+    }
+ 
+    { // waves
+        function waves_init() {
+            wave_counter = 0;
+            wave_timer_max = 200;
+            enemies_spawned_perwave = 1;
+            load_wave_changes();
+        }
+ 
+        function waves_timer() {
+            if (frame_counter % wave_timer_max == 0) {
+                for (let i = 0; i < enemies_spawned_perwave; i++)
+                create_enemy(SIZE*0.125+Math.random()*(SIZE-SIZE*0.25), -16);
+                wave_counter++;
+                if (wave_counter <= 100 && wave_counter % 10 == 0) {
+                    wave_changes[`_${wave_counter}`]();
+                }
+            }
+        }
+ 
+        function load_wave_changes() {
+            wave_changes = {
+                "_10": ()=>{wave_timer_max = 150},
+                "_20": ()=>{enemies_spawned_perwave = 2},
+                "_30": ()=>{wave_timer_max = 100},
+                "_40": ()=>{enemies_spawned_perwave = 3; wave_timer_max = 200},
+                "_50": ()=>{enemies_spawned_perwave = 4},
+                "_60": ()=>{wave_timer_max = 175},
+                "_70": ()=>{wave_timer_max = 150},
+                "_80": ()=>{wave_timer_max = 125},
+                "_90": ()=>{wave_timer_max = 100},
+                "_100": ()=>{wave_timer_max = 50}
+            }
+        }
+    }
+ 
+    { // particles
+        function particles_init() {
+            particles = [];
+            particle_colors = [
+                [1, 6, 7, 4, 9]
+            ]
+            shockwaves = [];
+        }
+ 
+        function fire_particle(x, y) {
+            my_particle = new Object;
+            my_particle.type = 0;
+ 
+            my_particle.x = x;
+            my_particle.y = y;
+ 
+            let rand = ()=>{return Math.random()};
+ 
+            let speed_mult = 10;
+            my_particle.sx = (2 + rand()*speed_mult);
+            my_particle.sx -= my_particle.sx/2;
+            my_particle.sy = (2 + rand()*speed_mult);
+            my_particle.sy -= my_particle.sy/2;
+ 
+            my_particle.lifetime = 3 + rand()*24;
+            my_particle.t = 0;
+ 
+            my_particle.col_index = 0;
+            my_particle.color = particle_colors[my_particle.type][my_particle.col_index];
+ 
+            let radius_mult = 16;
+            my_particle.radius = 4 + rand()*radius_mult;
+            particles.push(my_particle);
+        }
+
+        function shockwave(x, y) {
+            my_shockwave = new Object;
+
+            my_shockwave.x = x;
+            my_shockwave.y = y;
+
+            my_shockwave.radius = 0;
+
+            my_shockwave.color = 1;
+            
+            shockwaves.push(my_shockwave);
+        }
+ 
+        function particles_step() {
+            for (let i = particles.length-1; i >= 0; i--) {
+                my_particle = particles[i];
+ 
+                my_particle.x+=my_particle.sx;
+                my_particle.y+=my_particle.sy;
+
+                my_particle.radius-=1;
+ 
+                my_particle.t++;
+                if (my_particle.t % 4 == 0) {
+                    if (my_particle.sx > 0) {
+                        my_particle.sx-=1;
+                    }
+                    if (my_particle.sy > 0) {
+                        my_particle.sy-=1;
+                    }
+                    
+                    my_particle.col_index++;
+                    my_particle.color = particle_colors[my_particle.type][Math.min(my_particle.col_index, particle_colors[my_particle.type].length-1)];
+                }
+                if (my_particle.t > my_particle.lifetime) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            for (let i = shockwaves.length-1; i >= 0; i--) {
+                my_shockwave = shockwaves[i];
+                my_shockwave.radius += 5;
+                if (my_shockwave.radius > 90) {
+                    shockwaves.splice(i, 1);
+                }
+                if (my_shockwave.radius == 30) {
+                    my_shockwave.color = 2; 
+                }
+                if (my_shockwave.radius == 60) {
+                    my_shockwave.color = 9; 
+                }
+            }
+        }
+ 
+        function draw_particles() {
+            for (let i = particles.length-1; i >= 0; i--) {
+                my_particle = particles[i];
+                circle(my_particle.x, my_particle.y, my_particle.radius, my_particle.color, true);
+            }
+
+            for (let i = shockwaves.length-1; i >= 0; i--) {
+                my_shockwave = shockwaves[i];
+                circle(my_shockwave.x, my_shockwave.y, my_shockwave.radius, my_shockwave.color);
+            }
+        }
+ 
+        function fire_explosion(x, y) {
+            for (let i = 0; i < 10; i++) {
+                fire_particle(x, y);
+            }
+            shockwave(x, y);
+        }
+    }
+ 
+    { // sprite bitmaps
+        function colors_init() {
+            COL = {
+                0: "#002",
+                1: "#FFD",
+                2: "#AAA",
+                3: "#DDF",
+                4: "#D08",
+                5: "#0DF",
+                6: "#FD0",
+                7: "#F90",
+                8: "#45B",
+                9: "#525",
+            }
+            COLORS = {
+                "black": COL[0],
+                "white": COL[1],
+                "grey": COL[2],
+                "cyan_white": COL[3],
+                "red": COL[4],
+                "cyan": COL[5],
+                "yellow": COL[6],
+                "orange": COL[7],
+                "purple": COL[8],
+                "dark_grey": COL[9],
+            }
+        }
+ 
+        function convert_sprite(spr_str) {
+            let converted_spr = spr_str.replaceAll(" ","")
+            converted_spr = converted_spr.replaceAll(".","-1")
+            converted_spr = converted_spr.split("\n");
+ 
+            if (converted_spr[0] == "") {
+                converted_spr.shift();
+            }
+ 
+            for (let i = 0; i < converted_spr.length; i++) {
+                converted_spr[i] = converted_spr[i].split(",");
+            }
+ 
+            return converted_spr;
+        }
+ 
+        function sprites_init() {
+            let spr_init = "";
+            SPR_SPACESHIP = [];
+            spr_init = `
+                .,.,.,.,.,4,4,0,0,4,4,0,.,.,.,.
+                .,0,0,.,.,4,4,0,0,4,4,0,.,0,0,.
+                .,0,1,0,4,4,4,0,0,4,4,4,0,1,0,.
+                .,0,1,0,4,0,4,0,0,4,0,4,0,1,0,.
+                0,1,0,4,4,4,4,4,4,4,4,4,4,0,1,0
+                .,0,0,4,0,4,4,1,1,4,4,0,4,0,0,.
+                .,0,4,4,4,4,1,1,0,1,4,4,4,4,0,.
+                .,0,4,0,4,4,1,1,1,0,4,4,0,4,0,.
+                0,4,4,4,4,0,1,1,1,0,0,4,4,4,4,0
+                0,4,0,4,4,0,1,1,1,0,0,4,4,0,4,0
+                4,4,4,4,4,0,1,1,1,0,0,4,4,4,4,4
+                4,0,4,4,4,4,0,1,1,0,4,4,4,4,0,4
+                4,4,4,4,4,4,4,0,0,4,4,4,4,4,4,4
+                0,4,4,4,0,4,4,0,0,4,4,0,4,4,4,0
+                .,0,0,4,4,0,0,1,1,0,0,4,4,0,0,.
+                .,.,.,0,0,0,1,1,1,1,0,0,0,.,.,.`;
+            SPR_SPACESHIP[0] = convert_sprite(spr_init);
+ 
+            spr_init = `
+                .,.,.,.,.,0,4,0,4,4,0,.,.,.,.,.
+                .,.,0,0,.,0,4,0,4,4,0,0,0,.,.,.
+                .,.,0,1,0,4,4,0,4,4,0,1,0,.,.,.
+                .,.,0,1,0,4,0,0,4,0,0,1,0,.,.,.
+                .,.,0,0,4,4,4,4,4,4,0,1,0,.,.,.
+                .,.,0,0,4,0,4,4,4,4,0,0,0,.,.,.
+                .,.,0,4,4,4,4,1,1,4,4,4,4,0,.,.
+                .,.,0,4,0,4,1,1,0,4,4,0,4,4,0,.
+                .,.,0,4,4,4,1,1,0,4,4,4,4,4,0,.
+                .,0,4,0,4,4,1,1,0,4,4,4,0,4,4,0
+                .,0,4,4,4,4,1,1,0,4,4,4,4,4,4,0
+                .,0,4,4,4,4,4,0,4,4,4,4,4,0,4,0
+                .,.,0,4,4,4,4,4,4,4,4,4,4,4,0,.
+                .,.,0,4,0,4,4,4,4,4,0,4,4,0,.,.
+                .,.,.,0,4,0,0,0,0,0,4,4,0,.,.,.
+                .,.,.,.,0,0,0,1,1,0,0,0,.,.,.,.`;
+            SPR_SPACESHIP[1] = convert_sprite(spr_init);
+ 
+            spr_init = `
+                .,.,.,.,.,0,4,4,0,4,0,.,.,.,.,.
+                .,.,.,0,0,0,4,4,0,4,0,.,0,0,.,.
+                .,.,.,0,1,0,4,4,0,4,4,0,1,0,.,.
+                .,.,.,0,1,0,0,4,0,0,4,0,1,0,.,.
+                .,.,.,0,1,0,4,4,4,4,4,4,0,0,.,.
+                .,.,.,0,0,0,4,4,4,4,0,4,0,0,.,.
+                .,.,0,4,4,4,4,1,1,4,4,4,4,0,.,.
+                .,0,4,4,0,4,4,0,1,1,4,0,4,0,.,.
+                .,0,4,4,4,4,4,0,1,1,4,4,4,0,.,.
+                0,4,4,0,4,4,4,0,1,1,4,4,0,4,0,.
+                0,4,4,4,4,4,4,0,1,1,4,4,4,4,0,.
+                0,4,0,4,4,4,4,4,0,4,4,4,4,4,0,.
+                .,0,4,4,4,4,4,4,4,4,4,4,4,0,.,.
+                .,.,0,4,4,0,4,4,4,4,4,0,4,0,.,.
+                .,.,.,0,4,4,0,0,0,0,0,4,0,.,.,.
+                .,.,.,.,0,0,0,1,1,0,0,0,.,.,.,.`;
+            SPR_SPACESHIP[2] = convert_sprite(spr_init);
+            SPR_PROPULSIONFIRE = [];
+            spr_init = `
+                .,.,.,.,.,0,0,0,0,0,0,.,.,.,.,.
+                .,.,.,.,0,5,0,0,0,0,5,0,.,.,.,.
+                .,.,.,0,5,5,5,1,1,5,5,5,0,.,.,.
+                .,.,.,0,5,5,1,1,1,1,5,5,0,.,.,.
+                .,.,.,0,5,5,1,1,1,1,5,5,0,.,.,.
+                .,.,.,0,5,5,1,1,1,1,5,5,0,.,.,.
+                .,.,.,0,5,5,1,1,1,1,5,5,0,.,.,.
+                .,.,.,0,0,5,5,1,1,5,5,0,0,.,.,.
+                .,.,.,.,0,5,5,1,1,5,5,0,.,.,.,.
+                .,.,.,.,.,0,5,5,5,5,0,.,.,.,.,.
+                .,.,.,.,.,.,0,5,5,0,.,.,.,.,.,.
+                .,.,.,.,.,.,0,5,5,0,.,.,.,.,.,.
+                .,.,.,.,.,.,.,0,0,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.`;
+            SPR_PROPULSIONFIRE[0] = convert_sprite(spr_init);
+ 
+            spr_init = `
+                .,.,.,.,.,0,0,0,0,0,0,.,.,.,.,.
+                .,.,.,.,0,5,0,0,0,0,5,0,.,.,.,.
+                .,.,.,0,5,5,5,1,1,5,5,5,0,.,.,.
+                .,.,.,0,5,5,1,1,1,1,5,5,0,.,.,.
+                .,.,.,.,0,5,5,1,1,5,5,0,.,.,.,.
+                .,.,.,.,0,5,5,1,1,5,5,0,.,.,.,.
+                .,.,.,.,.,0,5,5,5,5,0,.,.,.,.,.
+                .,.,.,.,.,.,0,5,5,0,.,.,.,.,.,.
+                .,.,.,.,.,.,0,5,5,0,.,.,.,.,.,.
+                .,.,.,.,.,.,.,0,0,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.`;
+            SPR_PROPULSIONFIRE[1] = convert_sprite(spr_init);
+ 
+            SPR_PLAYERBULLET = [];
+            spr_init = `
+                .,.,.,.,.,.,0,0,0,0,.,.,.,.,.,.
+                .,.,.,.,.,0,1,1,1,1,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,0,5,1,1,5,0,.,.,.,.,.
+                .,.,.,.,.,.,0,5,5,0,.,.,.,.,.,.
+                .,.,.,.,.,.,.,0,0,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.`;
+            SPR_PLAYERBULLET[0] = convert_sprite(spr_init);
+ 
+            SPR_ENEMYBULLET = [];
+            spr_init = `
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,0,0,.,.,.,.,.,.,.
+                .,.,.,.,.,.,0,4,4,0,.,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,1,1,4,0,.,.,.,.,.
+                .,.,.,.,.,0,4,4,4,4,0,.,.,.,.,.
+                .,.,.,.,.,.,0,0,0,0,.,.,.,.,.,.`;
+            SPR_ENEMYBULLET[0] = convert_sprite(spr_init);
+ 
+            SPR_ENEMY = [];
+            spr_init = `
+                .,0,8,8,8,8,8,0,0,8,8,8,8,8,0,.
+                0,8,8,0,8,8,8,8,8,8,8,8,0,8,8,0
+                8,8,8,0,8,8,8,8,8,8,8,8,0,8,8,8
+                8,8,0,8,0,8,8,8,8,8,8,0,8,0,8,8
+                8,8,8,8,8,0,0,0,0,0,0,8,8,8,8,8
+                8,8,0,8,8,1,0,0,0,0,1,8,8,0,8,8
+                0,8,8,0,8,1,0,0,0,0,1,8,0,8,8,0
+                .,0,8,0,8,1,0,0,0,0,1,8,0,8,0,.
+                .,.,0,8,8,0,1,1,1,1,0,8,8,0,.,.
+                0,0,0,8,8,8,0,8,8,0,8,8,8,0,0,0
+                8,8,8,0,8,0,1,0,0,1,0,8,0,8,8,8
+                0,8,8,0,0,1,0,.,.,0,1,0,0,8,8,0
+                8,0,8,0,1,1,0,.,.,0,1,1,0,8,0,8
+                0,.,0,0,0,1,0,.,.,0,1,0,0,0,.,0
+                .,.,.,.,.,0,1,0,0,1,0,.,.,.,.,.
+                .,.,.,.,.,.,0,0,0,0,.,.,.,.,.,.`;
+            SPR_ENEMY[0] = convert_sprite(spr_init);
+
+            SPR_HEALTH = [];
+            spr_init =  `
+                .,.,.,.,.,.,4,4,4,4,4,4,4,4,4,4
+                .,.,.,.,.,4,4,4,4,4,4,4,4,4,4,9
+                .,.,.,.,4,4,4,4,4,4,4,4,4,4,9,9
+                .,.,.,4,4,4,4,4,4,4,4,4,4,9,9,9
+                .,.,4,4,4,4,4,4,4,4,4,4,9,9,9,.
+                .,4,4,4,4,4,4,4,4,4,4,9,9,9,.,.
+                4,4,4,4,4,4,4,4,4,4,9,9,9,.,.,.
+                2,2,2,2,2,2,2,2,2,2,9,9,.,.,.,.
+                2,2,2,2,2,2,2,2,2,2,9,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.`
+            SPR_HEALTH[0] = convert_sprite(spr_init);
+            spr_init =  `
+                .,.,.,.,.,.,4,4,4,4,4,4,4,4,4,4
+                .,.,.,.,.,4,0,0,0,0,0,0,0,0,4,9
+                .,.,.,.,4,0,0,0,0,0,0,0,0,4,9,9
+                .,.,.,4,0,0,0,0,0,0,0,0,4,9,9,9
+                .,.,4,0,0,0,0,0,0,0,0,4,9,9,9,.
+                .,4,0,0,0,0,0,0,0,0,4,9,9,9,.,.
+                4,4,4,4,4,4,4,4,4,4,9,9,9,.,.,.
+                2,2,2,2,2,2,2,2,2,2,9,9,.,.,.,.
+                2,2,2,2,2,2,2,2,2,2,9,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+                .,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.`
+            SPR_HEALTH[1] = convert_sprite(spr_init);
+        }
+    }
+    init();
+</script>
